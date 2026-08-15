@@ -15,7 +15,7 @@ function AdminDashboard({
   const fetchItems = async () => {
     try {
       const response = await fetch(
-        "http://localhost:5000/api/items"
+        "https://campus-find-peach.vercel.app/api/items"
       );
 
       if (!response.ok) {
@@ -48,7 +48,7 @@ function AdminDashboard({
 
     try {
       const response = await fetch(
-        `http://localhost:5000/api/items/${id}`,
+        `https://campus-find-peach.vercel.app/api/items/${id}`,
         {
           method: "DELETE",
         }

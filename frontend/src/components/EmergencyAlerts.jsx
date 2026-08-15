@@ -8,7 +8,7 @@ function EmergencyAlerts({ onViewDetails }) {
   const fetchEmergencyAlerts = async () => {
     try {
       const response = await fetch(
-        "http://localhost:5000/api/items"
+        "https://campus-find-peach.vercel.app/api/items"
       );
 
       if (!response.ok) {
@@ -195,7 +195,7 @@ function EmergencyAlerts({ onViewDetails }) {
                         {item.image ? (
 
                           <img
-                            src={`http://localhost:5000${item.image}`}
+                            src={`https://campus-find-peach.vercel.app${item.image}`}
                             alt={item.itemName}
                           />
 

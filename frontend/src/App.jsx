@@ -104,7 +104,7 @@ function App() {
 
           const response =
             await fetch(
-              `http://localhost:5000/api/items/${itemId}`
+              `https://campus-find-peach.vercel.app/api/items/${itemId}`
             );
 
           if (!response.ok) {

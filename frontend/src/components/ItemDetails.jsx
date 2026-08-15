@@ -219,7 +219,7 @@ function ItemDetails({ item, onBack }) {
 
       const response =
         await fetch(
-          `http://localhost:5000/api/items/${item._id}/verify`,
+          `https://campus-find-peach.vercel.app/api/items/${item._id}/verify`,
           {
             method: "POST",
 
@@ -307,7 +307,7 @@ function ItemDetails({ item, onBack }) {
 
       const response =
         await fetch(
-          `http://localhost:5000/api/items/${item._id}/resolve`,
+          `https://campus-find-peach.vercel.app/api/items/${item._id}/resolve`,
           {
             method: "PUT"
           }
@@ -375,7 +375,7 @@ function ItemDetails({ item, onBack }) {
             {item.image ? (
 
               <img
-                src={`http://localhost:5000${item.image}`}
+                src={`https://campus-find-peach.vercel.app${item.image}`}
                 alt={item.itemName}
                 className="item-details-image"
               />

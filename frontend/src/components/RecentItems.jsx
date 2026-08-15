@@ -15,7 +15,7 @@ function RecentItems({ onBrowse }) {
   const fetchRecentItems = async () => {
     try {
       const response = await fetch(
-        "http://localhost:5000/api/items"
+        "https://campus-find-peach.vercel.app/api/items"
       );
 
       if (!response.ok) {
@@ -137,7 +137,7 @@ function RecentItems({ onBrowse }) {
               {item.image ? (
 
                 <img
-                  src={`http://localhost:5000${item.image}`}
+                  src={`https://campus-find-peach.vercel.app${item.image}`}
                   alt={item.itemName}
                   className="recent-image"
                 />

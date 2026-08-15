@@ -33,7 +33,7 @@ function EditItem({ item, onBack, onUpdated }) {
   const [imagePreview, setImagePreview] =
     useState(
       item.image
-        ? `http://localhost:5000${item.image}`
+        ? `https://campus-find-peach.vercel.app${item.image}`
         : ""
     );
 
@@ -222,7 +222,7 @@ function EditItem({ item, onBack, onUpdated }) {
 
       const response =
         await fetch(
-          `http://localhost:5000/api/items/${item._id}`,
+          `https://campus-find-peach.vercel.app/api/items/${item._id}`,
           {
             method: "PUT",
             body: data

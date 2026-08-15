@@ -305,7 +305,7 @@ function ReportItem({ type, onBack }) {
 
       const response =
         await fetch(
-          "http://localhost:5000/api/items",
+          "https://campus-find-peach.vercel.app/api/items",
           {
             method: "POST",
             body: data

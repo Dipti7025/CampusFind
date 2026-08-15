@@ -11,7 +11,7 @@ function Statistics() {
   const fetchStatistics = async () => {
     try {
       const response = await fetch(
-        "http://localhost:5000/api/items"
+        "https://campus-find-peach.vercel.app/api/items"
       );
 
       if (!response.ok) {
