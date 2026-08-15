@@ -12,491 +12,363 @@ require("dotenv").config({
 const Item = require("./models/item");
 
 const app = express();
+
 const isVercel = Boolean(process.env.VERCEL);
 
-
-// =========================================================
+// ============================================================
 // MIDDLEWARE
-// =========================================================
+// ============================================================
 
-app.use(cors());
+app.use(
+    cors({
+        origin: true,
+        credentials: true
+    })
+);
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-
-// =========================================================
+// ============================================================
 // MONGODB CONNECTION
-// =========================================================
-// On Vercel, we keep one cached connection/promise and wait
-// for it before handling database requests.
-// =========================================================
+// ============================================================
 
 let mongoConnectionPromise = null;
 
 async function connectDB() {
-
     // Already connected
     if (mongoose.connection.readyState === 1) {
         return mongoose.connection;
     }
 
-    // Missing environment variable
+    // Check environment variable
     if (!process.env.MONGO_URI) {
         throw new Error(
-            "MONGO_URI environment variable is missing"
+            "MONGO_URI environment variable is missing."
         );
     }
 
-    // Reuse an existing connection attempt
+    // Reuse existing connection attempt
     if (!mongoConnectionPromise) {
-
-        mongoConnectionPromise =
-            mongoose.connect(
-                process.env.MONGO_URI,
-                {
-                    serverSelectionTimeoutMS: 10000,
-                    connectTimeoutMS: 10000,
-                    socketTimeoutMS: 45000,
-                    maxPoolSize: 10
-                }
-            )
+        mongoConnectionPromise = mongoose
+            .connect(process.env.MONGO_URI, {
+                serverSelectionTimeoutMS: 10000,
+                connectTimeoutMS: 10000,
+                socketTimeoutMS: 45000,
+                maxPoolSize: 10,
+                minPoolSize: 0
+            })
             .then(() => {
-
                 console.log(
                     "=========================================="
                 );
-
                 console.log(
                     "MongoDB Connected Successfully"
                 );
-
                 console.log(
                     "=========================================="
                 );
 
                 return mongoose.connection;
-
             })
             .catch((error) => {
-
-                // Allow a future request to retry
                 mongoConnectionPromise = null;
 
                 console.error(
                     "MongoDB Connection Error:",
-                    error
+                    error.message
                 );
 
                 throw error;
             });
     }
 
-    return await mongoConnectionPromise;
+    return mongoConnectionPromise;
 }
 
-
-// =========================================================
-// UPLOAD FOLDER
-// =========================================================
+// ============================================================
+// UPLOAD DIRECTORY
+// ============================================================
+//
 // LOCAL:
-//   backend/uploads
+// backend/uploads
 //
 // VERCEL:
-//   /tmp/campusfind-uploads
+// /tmp/campusfind-uploads
 //
-// Vercel's deployment filesystem is read-only.
-// /tmp is writable temporary storage.
-// =========================================================
+// IMPORTANT:
+// Vercel /tmp storage is temporary.
+// Use Cloudinary/Firebase/S3 for permanent image storage.
+// ============================================================
 
 const uploadFolder = isVercel
     ? path.join("/tmp", "campusfind-uploads")
     : path.join(__dirname, "uploads");
 
-
 try {
-
     if (!fs.existsSync(uploadFolder)) {
-
-        fs.mkdirSync(
-            uploadFolder,
-            {
-                recursive: true
-            }
-        );
-
+        fs.mkdirSync(uploadFolder, {
+            recursive: true
+        });
     }
-
 } catch (error) {
-
     console.error(
-        "ERROR CREATING UPLOAD FOLDER:",
-        error
+        "Error creating upload folder:",
+        error.message
     );
-
 }
 
-
-// =========================================================
-// MULTER
-// =========================================================
+// ============================================================
+// MULTER STORAGE
+// ============================================================
 
 const storage = multer.diskStorage({
-
-    destination: (req, file, cb) => {
-
-        cb(
-            null,
-            uploadFolder
-        );
-
+    destination: function (req, file, cb) {
+        cb(null, uploadFolder);
     },
 
-    filename: (req, file, cb) => {
+    filename: function (req, file, cb) {
+        const extension = path.extname(
+            file.originalname
+        );
 
         const uniqueName =
             Date.now() +
             "-" +
-            Math.round(Math.random() * 1E9) +
-            path.extname(
-                file.originalname
-            );
+            Math.round(Math.random() * 1e9) +
+            extension;
 
-        cb(
-            null,
-            uniqueName
-        );
-
+        cb(null, uniqueName);
     }
-
 });
 
+// ============================================================
+// MULTER UPLOAD
+// ============================================================
 
 const upload = multer({
-
-    storage: storage,
+    storage,
 
     limits: {
         fileSize: 5 * 1024 * 1024
     },
 
-    fileFilter: (req, file, cb) => {
+    fileFilter: function (req, file, cb) {
+        const allowedExtensions = [
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".webp"
+        ];
 
-        const allowedTypes =
-            /jpeg|jpg|png|webp/;
+        const extension = path
+            .extname(file.originalname)
+            .toLowerCase();
 
-        const extension =
-            allowedTypes.test(
-                path.extname(
-                    file.originalname
-                ).toLowerCase()
-            );
+        const allowedMimeTypes = [
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/webp"
+        ];
 
-        const mimeType =
-            allowedTypes.test(
-                file.mimetype
-            );
+        const validExtension =
+            allowedExtensions.includes(extension);
+
+        const validMimeType =
+            allowedMimeTypes.includes(file.mimetype);
 
         if (
-            extension &&
-            mimeType
+            validExtension &&
+            validMimeType
         ) {
-
-            cb(
-                null,
-                true
-            );
-
+            cb(null, true);
         } else {
-
             cb(
                 new Error(
                     "Only JPG, JPEG, PNG and WEBP images are allowed."
                 )
             );
-
         }
-
     }
-
 });
 
-
-// =========================================================
-// SERVE IMAGES
-// =========================================================
+// ============================================================
+// SERVE UPLOADED IMAGES
+// ============================================================
 
 app.use(
     "/uploads",
-    express.static(
-        uploadFolder
-    )
+    express.static(uploadFolder)
 );
 
+// ============================================================
+// HEALTH / HOME ROUTE
+// ============================================================
 
-// =========================================================
-// HOME ROUTE
-// =========================================================
-// Keep this before the database middleware so the root URL
-// can respond even if MongoDB is temporarily unavailable.
-// =========================================================
+app.get("/", function (req, res) {
+    res.status(200).json({
+        success: true,
+        message:
+            "Campus Lost & Found Backend is Running!",
+        environment: isVercel
+            ? "vercel"
+            : "local"
+    });
+});
 
-app.get(
-    "/",
-    (req, res) => {
-
-        res.status(200).send(
-            "Campus Lost & Found Backend is Running!"
-        );
-
-    }
-);
-
-
-// =========================================================
+// ============================================================
 // DATABASE MIDDLEWARE
-// =========================================================
-// Every API route below this point waits for MongoDB.
-// =========================================================
+// ============================================================
 
 app.use(
     "/api",
-    async (req, res, next) => {
-
+    async function (req, res, next) {
         try {
-
             await connectDB();
-
             next();
-
         } catch (error) {
-
             console.error(
                 "DATABASE CONNECTION FAILED:",
-                error
+                error.message
             );
 
             return res.status(503).json({
-
+                success: false,
                 message:
-                    "Database connection failed",
-
-                error:
-                    error.message
-
+                    "Database connection failed.",
+                error: error.message
             });
-
         }
-
     }
 );
 
+// ============================================================
+// HELPER: SAFE ITEM RESPONSE
+// ============================================================
 
-// =========================================================
+function sanitizeItem(item) {
+    const safeItem = {
+        ...item
+    };
+
+    // Never expose verification answers
+    delete safeItem.verificationAnswer1;
+    delete safeItem.verificationAnswer2;
+
+    // Backward compatibility
+    const hasQuestions =
+        typeof safeItem.verificationQuestion1 ===
+            "string" &&
+        safeItem.verificationQuestion1.trim() !== "" &&
+        typeof safeItem.verificationQuestion2 ===
+            "string" &&
+        safeItem.verificationQuestion2.trim() !== "";
+
+    if (
+        safeItem.type === "Found" &&
+        hasQuestions
+    ) {
+        safeItem.verificationMethod =
+            "questions";
+    }
+
+    if (!safeItem.verificationMethod) {
+        safeItem.verificationMethod = "none";
+    }
+
+    safeItem.isUrgent =
+        safeItem.isUrgent === true;
+
+    return safeItem;
+}
+
+// ============================================================
 // GET ALL ITEMS
-// =========================================================
+// ============================================================
 
 app.get(
     "/api/items",
-    async (req, res) => {
-
+    async function (req, res) {
         try {
+            const items = await Item.find()
+                .sort({
+                    createdAt: -1
+                })
+                .lean();
 
-            const items =
-                await Item.find()
-                    .sort({
-                        createdAt: -1
-                    })
-                    .lean();
-
-
-            const safeItems =
-                items.map(
-                    (item) => {
-
-                        const safeItem = {
-                            ...item
-                        };
-
-
-                        // Never expose verification answers
-                        delete safeItem.verificationAnswer1;
-                        delete safeItem.verificationAnswer2;
-
-
-                        // Backward compatibility for old
-                        // question-based Found reports
-                        const hasQuestions =
-                            typeof safeItem.verificationQuestion1 === "string" &&
-                            safeItem.verificationQuestion1.trim() !== "" &&
-                            typeof safeItem.verificationQuestion2 === "string" &&
-                            safeItem.verificationQuestion2.trim() !== "";
-
-
-                        if (
-                            safeItem.type === "Found" &&
-                            hasQuestions
-                        ) {
-
-                            safeItem.verificationMethod =
-                                "questions";
-
-                        }
-
-
-                        if (
-                            !safeItem.verificationMethod
-                        ) {
-
-                            safeItem.verificationMethod =
-                                "none";
-
-                        }
-
-
-                        // Always return a real boolean
-                        safeItem.isUrgent =
-                            safeItem.isUrgent === true;
-
-
-                        return safeItem;
-
-                    }
-                );
-
+            const safeItems = items.map(
+                sanitizeItem
+            );
 
             return res.status(200).json(
                 safeItems
             );
-
         } catch (error) {
-
             console.error(
                 "ERROR FETCHING ITEMS:",
-                error
+                error.message
             );
 
             return res.status(500).json({
-
+                success: false,
                 message:
-                    "Failed to fetch items",
-
-                error:
-                    error.message
-
+                    "Failed to fetch items.",
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
-// GET ONE ITEM
-// =========================================================
+// ============================================================
+// GET SINGLE ITEM
+// ============================================================
 
 app.get(
     "/api/items/:id",
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             const item =
                 await Item.findById(
                     req.params.id
                 ).lean();
 
-
             if (!item) {
-
                 return res.status(404).json({
-
+                    success: false,
                     message:
-                        "Item not found"
-
+                        "Item not found."
                 });
-
             }
-
-
-            const safeItem = {
-                ...item
-            };
-
-
-            delete safeItem.verificationAnswer1;
-            delete safeItem.verificationAnswer2;
-
-
-            const hasQuestions =
-                typeof safeItem.verificationQuestion1 === "string" &&
-                safeItem.verificationQuestion1.trim() !== "" &&
-                typeof safeItem.verificationQuestion2 === "string" &&
-                safeItem.verificationQuestion2.trim() !== "";
-
-
-            if (
-                safeItem.type === "Found" &&
-                hasQuestions
-            ) {
-
-                safeItem.verificationMethod =
-                    "questions";
-
-            }
-
-
-            if (
-                !safeItem.verificationMethod
-            ) {
-
-                safeItem.verificationMethod =
-                    "none";
-
-            }
-
-
-            safeItem.isUrgent =
-                safeItem.isUrgent === true;
-
 
             return res.status(200).json(
-                safeItem
+                sanitizeItem(item)
             );
-
         } catch (error) {
-
             console.error(
                 "ERROR FETCHING SINGLE ITEM:",
-                error
+                error.message
             );
 
             return res.status(500).json({
-
+                success: false,
                 message:
-                    "Failed to fetch item",
-
-                error:
-                    error.message
-
+                    "Failed to fetch item.",
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
+// ============================================================
 // ADD NEW ITEM
-// =========================================================
+// ============================================================
 
 app.post(
     "/api/items",
     upload.single("image"),
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             console.log(
                 "------------------------------------------"
             );
@@ -516,180 +388,162 @@ app.post(
             );
 
             console.log(
-                "isUrgent received:",
+                "Urgent:",
                 req.body.isUrgent
             );
 
             console.log(
-                "Verification method:",
+                "Verification:",
                 req.body.verificationMethod
             );
 
-
-            // ==========================================
+            // =================================================
             // URGENT FLAG
-            // ==========================================
+            // =================================================
 
             let isUrgent = false;
 
-
-            if (
-                req.body.type === "Lost"
-            ) {
-
+            if (req.body.type === "Lost") {
                 const urgentValue =
                     String(
                         req.body.isUrgent || ""
                     )
-                    .trim()
-                    .toLowerCase();
-
+                        .trim()
+                        .toLowerCase();
 
                 isUrgent =
                     urgentValue === "true";
-
             }
 
-
-            console.log(
-                "isUrgent converted to:",
-                isUrgent
-            );
-
-
-            // ==========================================
-            // VERIFICATION
-            // ==========================================
+            // =================================================
+            // VERIFICATION METHOD
+            // =================================================
 
             let verificationMethod =
                 req.body.verificationMethod ||
                 "none";
 
-
             const hasQuestions =
-                typeof req.body.verificationQuestion1 === "string" &&
+                typeof req.body.verificationQuestion1 ===
+                    "string" &&
                 req.body.verificationQuestion1.trim() !== "" &&
-                typeof req.body.verificationQuestion2 === "string" &&
+                typeof req.body.verificationQuestion2 ===
+                    "string" &&
                 req.body.verificationQuestion2.trim() !== "";
-
 
             if (
                 req.body.type === "Found" &&
                 hasQuestions
             ) {
-
                 verificationMethod =
                     "questions";
-
             }
-
 
             if (
                 req.body.type !== "Found"
             ) {
-
                 verificationMethod =
                     "none";
-
             }
 
+            const allowedVerificationMethods = [
+                "none",
+                "questions",
+                "faceToFace"
+            ];
 
             if (
-                ![
-                    "none",
-                    "questions",
-                    "faceToFace"
-                ].includes(
+                !allowedVerificationMethods.includes(
                     verificationMethod
                 )
             ) {
-
                 verificationMethod =
                     "none";
-
             }
 
-
-            // ==========================================
+            // =================================================
             // CREATE ITEM
-            // ==========================================
+            // =================================================
 
-            const newItem =
-                new Item({
+            const newItem = new Item({
+                itemName:
+                    req.body.itemName,
 
-                    itemName:
-                        req.body.itemName,
+                category:
+                    req.body.category,
 
-                    category:
-                        req.body.category,
+                type:
+                    req.body.type,
 
-                    type:
-                        req.body.type,
+                description:
+                    req.body.description,
 
-                    description:
-                        req.body.description,
+                location:
+                    req.body.location || "",
 
-                    location:
-                        req.body.location || "",
+                date:
+                    req.body.date,
 
-                    date:
-                        req.body.date,
+                contact:
+                    req.body.contact,
 
-                    contact:
-                        req.body.contact,
+                image:
+                    req.file
+                        ? `/uploads/${req.file.filename}`
+                        : "",
 
-                    image:
-                        req.file
-                            ? `/uploads/${req.file.filename}`
-                            : "",
+                status:
+                    "Active",
 
-                    status:
-                        "Active",
+                isUrgent:
+                    isUrgent,
 
-                    isUrgent:
-                        isUrgent,
+                verificationMethod:
+                    verificationMethod,
 
-                    verificationMethod:
-                        verificationMethod,
+                verificationQuestion1:
+                    verificationMethod ===
+                    "questions"
+                        ? String(
+                              req.body
+                                  .verificationQuestion1 ||
+                                  ""
+                          ).trim()
+                        : "",
 
-                    verificationQuestion1:
-                        verificationMethod === "questions"
-                            ? (
-                                req.body.verificationQuestion1 ||
-                                ""
-                            ).trim()
-                            : "",
+                verificationAnswer1:
+                    verificationMethod ===
+                    "questions"
+                        ? String(
+                              req.body
+                                  .verificationAnswer1 ||
+                                  ""
+                          ).trim()
+                        : "",
 
-                    verificationAnswer1:
-                        verificationMethod === "questions"
-                            ? (
-                                req.body.verificationAnswer1 ||
-                                ""
-                            ).trim()
-                            : "",
+                verificationQuestion2:
+                    verificationMethod ===
+                    "questions"
+                        ? String(
+                              req.body
+                                  .verificationQuestion2 ||
+                                  ""
+                          ).trim()
+                        : "",
 
-                    verificationQuestion2:
-                        verificationMethod === "questions"
-                            ? (
-                                req.body.verificationQuestion2 ||
-                                ""
-                            ).trim()
-                            : "",
-
-                    verificationAnswer2:
-                        verificationMethod === "questions"
-                            ? (
-                                req.body.verificationAnswer2 ||
-                                ""
-                            ).trim()
-                            : ""
-
-                });
-
+                verificationAnswer2:
+                    verificationMethod ===
+                    "questions"
+                        ? String(
+                              req.body
+                                  .verificationAnswer2 ||
+                                  ""
+                          ).trim()
+                        : ""
+            });
 
             const savedItem =
                 await newItem.save();
-
 
             console.log(
                 "Saved item:",
@@ -705,233 +559,174 @@ app.post(
                 "------------------------------------------"
             );
 
-
             return res.status(201).json({
-
+                success: true,
                 message:
-                    "Item reported successfully",
-
+                    "Item reported successfully.",
                 item:
-                    savedItem
-
+                    sanitizeItem(
+                        savedItem.toObject()
+                    )
             });
-
         } catch (error) {
-
             console.error(
                 "ERROR ADDING ITEM:",
                 error
             );
 
             return res.status(400).json({
-
+                success: false,
                 message:
-                    "Failed to add item",
-
-                error:
-                    error.message
-
+                    "Failed to add item.",
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
+// ============================================================
 // VERIFY OWNERSHIP
-// =========================================================
+// ============================================================
 
 app.post(
     "/api/items/:id/verify",
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             const item =
                 await Item.findById(
                     req.params.id
                 );
 
-
             if (!item) {
-
                 return res.status(404).json({
-
-                    verified:
-                        false,
-
+                    verified: false,
                     message:
-                        "Item not found"
-
+                        "Item not found."
                 });
-
             }
-
 
             if (
                 item.type !== "Found"
             ) {
-
                 return res.status(400).json({
-
-                    verified:
-                        false,
-
+                    verified: false,
                     message:
                         "Verification is only available for found items."
-
                 });
-
             }
 
-
             const hasQuestions =
-                typeof item.verificationQuestion1 === "string" &&
+                typeof item.verificationQuestion1 ===
+                    "string" &&
                 item.verificationQuestion1.trim() !== "" &&
-                typeof item.verificationQuestion2 === "string" &&
+                typeof item.verificationQuestion2 ===
+                    "string" &&
                 item.verificationQuestion2.trim() !== "";
 
-
             const questionVerificationEnabled =
-                item.verificationMethod === "questions" ||
+                item.verificationMethod ===
+                    "questions" ||
                 hasQuestions;
-
 
             if (
                 !questionVerificationEnabled
             ) {
-
                 return res.status(400).json({
-
-                    verified:
-                        false,
-
+                    verified: false,
                     message:
                         "Question verification is not enabled."
-
                 });
-
             }
-
 
             const answer1 =
                 String(
                     req.body.answer1 || ""
                 )
-                .trim()
-                .toLowerCase();
-
+                    .trim()
+                    .toLowerCase();
 
             const answer2 =
                 String(
                     req.body.answer2 || ""
                 )
-                .trim()
-                .toLowerCase();
-
+                    .trim()
+                    .toLowerCase();
 
             const correctAnswer1 =
                 String(
                     item.verificationAnswer1 ||
-                    ""
+                        ""
                 )
-                .trim()
-                .toLowerCase();
-
+                    .trim()
+                    .toLowerCase();
 
             const correctAnswer2 =
                 String(
                     item.verificationAnswer2 ||
-                    ""
+                        ""
                 )
-                .trim()
-                .toLowerCase();
-
+                    .trim()
+                    .toLowerCase();
 
             if (
-                answer1 === correctAnswer1 &&
-                answer2 === correctAnswer2
+                answer1 ===
+                    correctAnswer1 &&
+                answer2 ===
+                    correctAnswer2
             ) {
-
                 return res.status(200).json({
-
-                    verified:
-                        true,
-
+                    verified: true,
                     message:
                         "Ownership verified successfully."
-
                 });
-
             }
 
-
             return res.status(401).json({
-
-                verified:
-                    false,
-
+                verified: false,
                 message:
                     "Ownership could not be verified. Please check your answers."
-
             });
-
         } catch (error) {
-
             console.error(
                 "ERROR VERIFYING OWNERSHIP:",
-                error
+                error.message
             );
 
             return res.status(500).json({
-
-                verified:
-                    false,
-
+                verified: false,
                 message:
                     "Verification failed.",
-
-                error:
-                    error.message
-
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
+// ============================================================
 // UPDATE ITEM
-// =========================================================
+// ============================================================
 
 app.put(
     "/api/items/:id",
     upload.single("image"),
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             const existingItem =
                 await Item.findById(
                     req.params.id
                 );
 
-
             if (!existingItem) {
-
                 return res.status(404).json({
-
+                    success: false,
                     message:
-                        "Item not found"
-
+                        "Item not found."
                 });
-
             }
 
+            // =================================================
+            // BASIC DATA
+            // =================================================
 
             existingItem.itemName =
                 req.body.itemName;
@@ -954,121 +749,108 @@ app.put(
             existingItem.contact =
                 req.body.contact;
 
-
-            // ==========================================
-            // UPDATE URGENT FLAG
-            // ==========================================
+            // =================================================
+            // URGENT
+            // =================================================
 
             if (
                 existingItem.type === "Lost"
             ) {
-
                 const urgentValue =
                     String(
                         req.body.isUrgent || ""
                     )
-                    .trim()
-                    .toLowerCase();
-
+                        .trim()
+                        .toLowerCase();
 
                 existingItem.isUrgent =
                     urgentValue === "true";
-
             } else {
-
                 existingItem.isUrgent =
                     false;
-
             }
 
-
-            // ==========================================
-            // UPDATE VERIFICATION
-            // ==========================================
+            // =================================================
+            // VERIFICATION
+            // =================================================
 
             let verificationMethod =
                 req.body.verificationMethod ||
                 "none";
 
-
             const hasQuestions =
-                typeof req.body.verificationQuestion1 === "string" &&
+                typeof req.body.verificationQuestion1 ===
+                    "string" &&
                 req.body.verificationQuestion1.trim() !== "" &&
-                typeof req.body.verificationQuestion2 === "string" &&
+                typeof req.body.verificationQuestion2 ===
+                    "string" &&
                 req.body.verificationQuestion2.trim() !== "";
-
 
             if (
                 existingItem.type === "Found" &&
                 hasQuestions
             ) {
-
                 verificationMethod =
                     "questions";
-
             }
-
 
             if (
                 existingItem.type !== "Found"
             ) {
-
                 verificationMethod =
                     "none";
-
             }
 
+            const allowedVerificationMethods = [
+                "none",
+                "questions",
+                "faceToFace"
+            ];
 
             if (
-                ![
-                    "none",
-                    "questions",
-                    "faceToFace"
-                ].includes(
+                !allowedVerificationMethods.includes(
                     verificationMethod
                 )
             ) {
-
                 verificationMethod =
                     "none";
-
             }
-
 
             existingItem.verificationMethod =
                 verificationMethod;
 
-
             if (
-                verificationMethod === "questions"
+                verificationMethod ===
+                "questions"
             ) {
-
                 existingItem.verificationQuestion1 =
-                    (
-                        req.body.verificationQuestion1 ||
-                        ""
+                    String(
+                        req.body
+                            .verificationQuestion1 ||
+                            ""
                     ).trim();
 
                 existingItem.verificationAnswer1 =
-                    (
-                        req.body.verificationAnswer1 ||
-                        ""
+                    String(
+                        req.body
+                            .verificationAnswer1 ||
+                            ""
                     ).trim();
 
                 existingItem.verificationQuestion2 =
-                    (
-                        req.body.verificationQuestion2 ||
-                        ""
+                    String(
+                        req.body
+                            .verificationQuestion2 ||
+                            ""
                     ).trim();
 
                 existingItem.verificationAnswer2 =
-                    (
-                        req.body.verificationAnswer2 ||
-                        ""
+                    String(
+                        req.body
+                            .verificationAnswer2 ||
+                            ""
                     ).trim();
-
             } else {
-
                 existingItem.verificationQuestion1 =
                     "";
 
@@ -1080,23 +862,19 @@ app.put(
 
                 existingItem.verificationAnswer2 =
                     "";
-
             }
 
-
-            // ==========================================
-            // UPDATE IMAGE
-            // ==========================================
+            // =================================================
+            // IMAGE UPDATE
+            // =================================================
 
             if (req.file) {
-
                 if (
                     existingItem.image &&
                     existingItem.image.startsWith(
                         "/uploads/"
                     )
                 ) {
-
                     const oldFileName =
                         path.basename(
                             existingItem.image
@@ -1108,192 +886,146 @@ app.put(
                             oldFileName
                         );
 
-
                     if (
                         fs.existsSync(
                             oldFilePath
                         )
                     ) {
-
                         try {
-
                             fs.unlinkSync(
                                 oldFilePath
                             );
-
-                        } catch (deleteError) {
-
+                        } catch (
+                            deleteError
+                        ) {
                             console.warn(
                                 "Could not delete old image:",
                                 deleteError.message
                             );
-
                         }
-
                     }
-
                 }
-
 
                 existingItem.image =
                     `/uploads/${req.file.filename}`;
-
             }
-
 
             const updatedItem =
                 await existingItem.save();
 
-
             return res.status(200).json({
-
+                success: true,
                 message:
-                    "Item updated successfully",
-
+                    "Item updated successfully.",
                 item:
-                    updatedItem
-
+                    sanitizeItem(
+                        updatedItem.toObject()
+                    )
             });
-
         } catch (error) {
-
             console.error(
                 "ERROR UPDATING ITEM:",
                 error
             );
 
             return res.status(400).json({
-
+                success: false,
                 message:
-                    "Failed to update item",
-
-                error:
-                    error.message
-
+                    "Failed to update item.",
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
+// ============================================================
 // RESOLVE ITEM
-// =========================================================
+// ============================================================
 
 app.put(
     "/api/items/:id/resolve",
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             const updatedItem =
                 await Item.findByIdAndUpdate(
-
                     req.params.id,
-
                     {
-                        status:
-                            "Resolved",
-
-                        isUrgent:
-                            false
+                        status: "Resolved",
+                        isUrgent: false
                     },
-
                     {
-                        new:
-                            true
+                        new: true
                     }
                 );
 
-
             if (!updatedItem) {
-
                 return res.status(404).json({
-
+                    success: false,
                     message:
-                        "Item not found"
-
+                        "Item not found."
                 });
-
             }
 
-
             return res.status(200).json({
-
+                success: true,
                 message:
-                    "Item marked as resolved successfully",
-
+                    "Item marked as resolved successfully.",
                 item:
-                    updatedItem
-
+                    sanitizeItem(
+                        updatedItem.toObject()
+                    )
             });
-
         } catch (error) {
-
             console.error(
                 "ERROR RESOLVING ITEM:",
-                error
+                error.message
             );
 
             return res.status(500).json({
-
+                success: false,
                 message:
-                    "Failed to update item status",
-
-                error:
-                    error.message
-
+                    "Failed to update item status.",
+                error: error.message
             });
-
         }
-
     }
 );
 
-
-// =========================================================
+// ============================================================
 // DELETE ITEM
-// =========================================================
+// ============================================================
 
 app.delete(
     "/api/items/:id",
-    async (req, res) => {
-
+    async function (req, res) {
         try {
-
             const deletedItem =
                 await Item.findByIdAndDelete(
                     req.params.id
                 );
 
-
             if (!deletedItem) {
-
                 return res.status(404).json({
-
+                    success: false,
                     message:
-                        "Item not found"
-
+                        "Item not found."
                 });
-
             }
 
+            // =================================================
+            // DELETE IMAGE
+            // =================================================
 
-            // Delete image
             if (
                 deletedItem.image &&
                 deletedItem.image.startsWith(
                     "/uploads/"
                 )
             ) {
-
                 const fileName =
                     path.basename(
                         deletedItem.image
                     );
-
 
                 const filePath =
                     path.join(
@@ -1301,90 +1033,120 @@ app.delete(
                         fileName
                     );
 
-
                 if (
                     fs.existsSync(
                         filePath
                     )
                 ) {
-
                     try {
-
                         fs.unlinkSync(
                             filePath
                         );
-
-                    } catch (deleteError) {
-
+                    } catch (
+                        deleteError
+                    ) {
                         console.warn(
                             "Could not delete image:",
                             deleteError.message
                         );
-
                     }
-
                 }
-
             }
 
-
             return res.status(200).json({
-
+                success: true,
                 message:
-                    "Item deleted successfully"
-
+                    "Item deleted successfully."
             });
-
         } catch (error) {
-
             console.error(
                 "ERROR DELETING ITEM:",
-                error
+                error.message
             );
 
             return res.status(500).json({
-
+                success: false,
                 message:
-                    "Failed to delete item",
-
-                error:
-                    error.message
-
+                    "Failed to delete item.",
+                error: error.message
             });
-
         }
-
     }
 );
 
+// ============================================================
+// MULTER ERROR HANDLER
+// ============================================================
 
-// =========================================================
-// LOCAL SERVER START
-// =========================================================
-// On Vercel we export the Express app.
-// Locally we start app.listen().
-// =========================================================
+app.use(
+    function (error, req, res, next) {
+        if (
+            error instanceof multer.MulterError
+        ) {
+            if (
+                error.code ===
+                "LIMIT_FILE_SIZE"
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Image size must be less than 5MB."
+                });
+            }
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    error.message
+            });
+        }
+
+        if (error) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    error.message
+            });
+        }
+
+        next();
+    }
+);
+
+// ============================================================
+// 404 API HANDLER
+// ============================================================
+
+app.use(
+    "/api",
+    function (req, res) {
+        return res.status(404).json({
+            success: false,
+            message:
+                "API route not found."
+        });
+    }
+);
+
+// ============================================================
+// LOCAL SERVER
+// ============================================================
 
 if (!isVercel) {
-
     connectDB()
-        .then(() => {
-
+        .then(function () {
             const PORT =
-                process.env.PORT ||
-                5000;
-
+                process.env.PORT || 5000;
 
             app.listen(
                 PORT,
-                () => {
-
+                function () {
                     console.log(
                         "=========================================="
                     );
 
                     console.log(
-                        "MongoDB Connected Successfully"
+                        "CampusFind Backend Started"
                     );
 
                     console.log(
@@ -1392,15 +1154,16 @@ if (!isVercel) {
                     );
 
                     console.log(
-                        "=========================================="
+                        "MongoDB Connected Successfully"
                     );
 
+                    console.log(
+                        "=========================================="
+                    );
                 }
             );
-
         })
-        .catch((error) => {
-
+        .catch(function (error) {
             console.error(
                 "=========================================="
             );
@@ -1418,14 +1181,11 @@ if (!isVercel) {
             );
 
             process.exit(1);
-
         });
-
 }
 
-
-// =========================================================
+// ============================================================
 // VERCEL EXPORT
-// =========================================================
+// ============================================================
 
 module.exports = app;
