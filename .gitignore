@@ -17,3 +17,6 @@ frontend/dist/
 backend/uploads/
 
 *.log
+
+.vercel
+.env*

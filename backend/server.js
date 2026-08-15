@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
+const { v2: cloudinary } = require("cloudinary");
 
 require("dotenv").config({
     override: true
@@ -14,6 +14,25 @@ const Item = require("./models/item");
 const app = express();
 
 const isVercel = Boolean(process.env.VERCEL);
+
+// ============================================================
+// CLOUDINARY CONFIGURATION
+// ============================================================
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+console.log(
+    "Cloudinary configured:",
+    Boolean(
+        process.env.CLOUDINARY_CLOUD_NAME &&
+        process.env.CLOUDINARY_API_KEY &&
+        process.env.CLOUDINARY_API_SECRET
+    )
+);
 
 // ============================================================
 // MIDDLEWARE
@@ -36,19 +55,16 @@ app.use(express.urlencoded({ extended: true }));
 let mongoConnectionPromise = null;
 
 async function connectDB() {
-    // Already connected
     if (mongoose.connection.readyState === 1) {
         return mongoose.connection;
     }
 
-    // Check environment variable
     if (!process.env.MONGO_URI) {
         throw new Error(
             "MONGO_URI environment variable is missing."
         );
     }
 
-    // Reuse existing connection attempt
     if (!mongoConnectionPromise) {
         mongoConnectionPromise = mongoose
             .connect(process.env.MONGO_URI, {
@@ -62,9 +78,11 @@ async function connectDB() {
                 console.log(
                     "=========================================="
                 );
+
                 console.log(
                     "MongoDB Connected Successfully"
                 );
+
                 console.log(
                     "=========================================="
                 );
@@ -87,60 +105,16 @@ async function connectDB() {
 }
 
 // ============================================================
-// UPLOAD DIRECTORY
+// MULTER MEMORY STORAGE
 // ============================================================
-//
-// LOCAL:
-// backend/uploads
-//
-// VERCEL:
-// /tmp/campusfind-uploads
 //
 // IMPORTANT:
-// Vercel /tmp storage is temporary.
-// Use Cloudinary/Firebase/S3 for permanent image storage.
-// ============================================================
+// We no longer save images into /uploads.
+// The image is temporarily kept in memory and then
+// uploaded directly to Cloudinary.
+//
 
-const uploadFolder = isVercel
-    ? path.join("/tmp", "campusfind-uploads")
-    : path.join(__dirname, "uploads");
-
-try {
-    if (!fs.existsSync(uploadFolder)) {
-        fs.mkdirSync(uploadFolder, {
-            recursive: true
-        });
-    }
-} catch (error) {
-    console.error(
-        "Error creating upload folder:",
-        error.message
-    );
-}
-
-// ============================================================
-// MULTER STORAGE
-// ============================================================
-
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadFolder);
-    },
-
-    filename: function (req, file, cb) {
-        const extension = path.extname(
-            file.originalname
-        );
-
-        const uniqueName =
-            Date.now() +
-            "-" +
-            Math.round(Math.random() * 1e9) +
-            extension;
-
-        cb(null, uniqueName);
-    }
-});
+const storage = multer.memoryStorage();
 
 // ============================================================
 // MULTER UPLOAD
@@ -194,13 +168,91 @@ const upload = multer({
 });
 
 // ============================================================
-// SERVE UPLOADED IMAGES
+// UPLOAD IMAGE TO CLOUDINARY
 // ============================================================
 
-app.use(
-    "/uploads",
-    express.static(uploadFolder)
-);
+function uploadToCloudinary(fileBuffer) {
+    return new Promise((resolve, reject) => {
+        const uploadStream =
+            cloudinary.uploader.upload_stream(
+                {
+                    folder: "campusfind/items",
+                    resource_type: "image"
+                },
+                function (error, result) {
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve(result);
+                    }
+                }
+            );
+
+        uploadStream.end(fileBuffer);
+    });
+}
+
+// ============================================================
+// DELETE IMAGE FROM CLOUDINARY
+// ============================================================
+
+async function deleteCloudinaryImage(imageUrl) {
+    try {
+        if (
+            !imageUrl ||
+            !imageUrl.includes("res.cloudinary.com")
+        ) {
+            return;
+        }
+
+        const parts = imageUrl.split("/");
+
+        const uploadIndex =
+            parts.indexOf("upload");
+
+        if (uploadIndex === -1) {
+            return;
+        }
+
+        let publicIdParts =
+            parts.slice(uploadIndex + 1);
+
+        // Remove transformations/version information
+        if (
+            publicIdParts.length > 0 &&
+            /^v\d+$/.test(publicIdParts[0])
+        ) {
+            publicIdParts.shift();
+        }
+
+        // Remove file extension
+        const lastIndex =
+            publicIdParts.length - 1;
+
+        publicIdParts[lastIndex] =
+            publicIdParts[lastIndex].replace(
+                /\.[^/.]+$/,
+                ""
+            );
+
+        const publicId =
+            publicIdParts.join("/");
+
+        if (publicId) {
+            await cloudinary.uploader.destroy(
+                publicId,
+                {
+                    resource_type: "image"
+                }
+            );
+        }
+    } catch (error) {
+        console.warn(
+            "Could not delete Cloudinary image:",
+            error.message
+        );
+    }
+}
 
 // ============================================================
 // HEALTH / HOME ROUTE
@@ -244,7 +296,7 @@ app.use(
 );
 
 // ============================================================
-// HELPER: SAFE ITEM RESPONSE
+// SAFE ITEM RESPONSE
 // ============================================================
 
 function sanitizeItem(item) {
@@ -252,11 +304,9 @@ function sanitizeItem(item) {
         ...item
     };
 
-    // Never expose verification answers
     delete safeItem.verificationAnswer1;
     delete safeItem.verificationAnswer2;
 
-    // Backward compatibility
     const hasQuestions =
         typeof safeItem.verificationQuestion1 ===
             "string" &&
@@ -297,9 +347,8 @@ app.get(
                 })
                 .lean();
 
-            const safeItems = items.map(
-                sanitizeItem
-            );
+            const safeItems =
+                items.map(sanitizeItem);
 
             return res.status(200).json(
                 safeItems
@@ -398,7 +447,7 @@ app.post(
             );
 
             // =================================================
-            // URGENT FLAG
+            // URGENT
             // =================================================
 
             let isUrgent = false;
@@ -462,6 +511,31 @@ app.post(
             }
 
             // =================================================
+            // CLOUDINARY IMAGE
+            // =================================================
+
+            let imageUrl = "";
+
+            if (req.file) {
+                console.log(
+                    "Uploading image to Cloudinary..."
+                );
+
+                const cloudinaryResult =
+                    await uploadToCloudinary(
+                        req.file.buffer
+                    );
+
+                imageUrl =
+                    cloudinaryResult.secure_url;
+
+                console.log(
+                    "Cloudinary image URL:",
+                    imageUrl
+                );
+            }
+
+            // =================================================
             // CREATE ITEM
             // =================================================
 
@@ -488,9 +562,7 @@ app.post(
                     req.body.contact,
 
                 image:
-                    req.file
-                        ? `/uploads/${req.file.filename}`
-                        : "",
+                    imageUrl,
 
                 status:
                     "Active",
@@ -551,8 +623,8 @@ app.post(
             );
 
             console.log(
-                "Saved isUrgent:",
-                savedItem.isUrgent
+                "Saved image:",
+                savedItem.image
             );
 
             console.log(
@@ -669,10 +741,8 @@ app.post(
                     .toLowerCase();
 
             if (
-                answer1 ===
-                    correctAnswer1 &&
-                answer2 ===
-                    correctAnswer2
+                answer1 === correctAnswer1 &&
+                answer2 === correctAnswer2
             ) {
                 return res.status(200).json({
                     verified: true,
@@ -865,49 +935,41 @@ app.put(
             }
 
             // =================================================
-            // IMAGE UPDATE
+            // NEW IMAGE
             // =================================================
 
             if (req.file) {
+                console.log(
+                    "Uploading updated image to Cloudinary..."
+                );
+
+                const cloudinaryResult =
+                    await uploadToCloudinary(
+                        req.file.buffer
+                    );
+
+                const newImageUrl =
+                    cloudinaryResult.secure_url;
+
+                // Delete old Cloudinary image
                 if (
                     existingItem.image &&
-                    existingItem.image.startsWith(
-                        "/uploads/"
+                    existingItem.image.includes(
+                        "res.cloudinary.com"
                     )
                 ) {
-                    const oldFileName =
-                        path.basename(
-                            existingItem.image
-                        );
-
-                    const oldFilePath =
-                        path.join(
-                            uploadFolder,
-                            oldFileName
-                        );
-
-                    if (
-                        fs.existsSync(
-                            oldFilePath
-                        )
-                    ) {
-                        try {
-                            fs.unlinkSync(
-                                oldFilePath
-                            );
-                        } catch (
-                            deleteError
-                        ) {
-                            console.warn(
-                                "Could not delete old image:",
-                                deleteError.message
-                            );
-                        }
-                    }
+                    await deleteCloudinaryImage(
+                        existingItem.image
+                    );
                 }
 
                 existingItem.image =
-                    `/uploads/${req.file.filename}`;
+                    newImageUrl;
+
+                console.log(
+                    "Updated image:",
+                    newImageUrl
+                );
             }
 
             const updatedItem =
@@ -1012,45 +1074,16 @@ app.delete(
                 });
             }
 
-            // =================================================
-            // DELETE IMAGE
-            // =================================================
-
+            // Delete Cloudinary image
             if (
                 deletedItem.image &&
-                deletedItem.image.startsWith(
-                    "/uploads/"
+                deletedItem.image.includes(
+                    "res.cloudinary.com"
                 )
             ) {
-                const fileName =
-                    path.basename(
-                        deletedItem.image
-                    );
-
-                const filePath =
-                    path.join(
-                        uploadFolder,
-                        fileName
-                    );
-
-                if (
-                    fs.existsSync(
-                        filePath
-                    )
-                ) {
-                    try {
-                        fs.unlinkSync(
-                            filePath
-                        );
-                    } catch (
-                        deleteError
-                    ) {
-                        console.warn(
-                            "Could not delete image:",
-                            deleteError.message
-                        );
-                    }
-                }
+                await deleteCloudinaryImage(
+                    deletedItem.image
+                );
             }
 
             return res.status(200).json({
@@ -1158,6 +1191,10 @@ if (!isVercel) {
                     );
 
                     console.log(
+                        "Cloudinary Image Storage Enabled"
+                    );
+
+                    console.log(
                         "=========================================="
                     );
                 }
@@ -1172,9 +1209,7 @@ if (!isVercel) {
                 "MongoDB Connection Error:"
             );
 
-            console.error(
-                error
-            );
+            console.error(error);
 
             console.error(
                 "=========================================="
