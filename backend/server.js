@@ -12,6 +12,7 @@ require("dotenv").config({
 const Item = require("./models/item");
 
 const app = express();
+const isVercel = Boolean(process.env.VERCEL);
 
 
 // =========================================================
@@ -23,6 +24,77 @@ app.use(express.json());
 
 
 // =========================================================
+// MONGODB CONNECTION
+// =========================================================
+// On Vercel, we keep one cached connection/promise and wait
+// for it before handling database requests.
+// =========================================================
+
+let mongoConnectionPromise = null;
+
+async function connectDB() {
+
+    // Already connected
+    if (mongoose.connection.readyState === 1) {
+        return mongoose.connection;
+    }
+
+    // Missing environment variable
+    if (!process.env.MONGO_URI) {
+        throw new Error(
+            "MONGO_URI environment variable is missing"
+        );
+    }
+
+    // Reuse an existing connection attempt
+    if (!mongoConnectionPromise) {
+
+        mongoConnectionPromise =
+            mongoose.connect(
+                process.env.MONGO_URI,
+                {
+                    serverSelectionTimeoutMS: 10000,
+                    connectTimeoutMS: 10000,
+                    socketTimeoutMS: 45000,
+                    maxPoolSize: 10
+                }
+            )
+            .then(() => {
+
+                console.log(
+                    "=========================================="
+                );
+
+                console.log(
+                    "MongoDB Connected Successfully"
+                );
+
+                console.log(
+                    "=========================================="
+                );
+
+                return mongoose.connection;
+
+            })
+            .catch((error) => {
+
+                // Allow a future request to retry
+                mongoConnectionPromise = null;
+
+                console.error(
+                    "MongoDB Connection Error:",
+                    error
+                );
+
+                throw error;
+            });
+    }
+
+    return await mongoConnectionPromise;
+}
+
+
+// =========================================================
 // UPLOAD FOLDER
 // =========================================================
 // LOCAL:
@@ -31,18 +103,35 @@ app.use(express.json());
 // VERCEL:
 //   /tmp/campusfind-uploads
 //
-// Vercel's deployed filesystem is read-only, but /tmp is
-// writable for temporary files.
+// Vercel's deployment filesystem is read-only.
+// /tmp is writable temporary storage.
 // =========================================================
 
-const uploadFolder = process.env.VERCEL
+const uploadFolder = isVercel
     ? path.join("/tmp", "campusfind-uploads")
     : path.join(__dirname, "uploads");
 
-if (!fs.existsSync(uploadFolder)) {
-    fs.mkdirSync(uploadFolder, {
-        recursive: true
-    });
+
+try {
+
+    if (!fs.existsSync(uploadFolder)) {
+
+        fs.mkdirSync(
+            uploadFolder,
+            {
+                recursive: true
+            }
+        );
+
+    }
+
+} catch (error) {
+
+    console.error(
+        "ERROR CREATING UPLOAD FOLDER:",
+        error
+    );
+
 }
 
 
@@ -53,7 +142,12 @@ if (!fs.existsSync(uploadFolder)) {
 const storage = multer.diskStorage({
 
     destination: (req, file, cb) => {
-        cb(null, uploadFolder);
+
+        cb(
+            null,
+            uploadFolder
+        );
+
     },
 
     filename: (req, file, cb) => {
@@ -62,9 +156,15 @@ const storage = multer.diskStorage({
             Date.now() +
             "-" +
             Math.round(Math.random() * 1E9) +
-            path.extname(file.originalname);
+            path.extname(
+                file.originalname
+            );
 
-        cb(null, uniqueName);
+        cb(
+            null,
+            uniqueName
+        );
+
     }
 
 });
@@ -95,9 +195,15 @@ const upload = multer({
                 file.mimetype
             );
 
-        if (extension && mimeType) {
+        if (
+            extension &&
+            mimeType
+        ) {
 
-            cb(null, true);
+            cb(
+                null,
+                true
+            );
 
         } else {
 
@@ -120,21 +226,68 @@ const upload = multer({
 
 app.use(
     "/uploads",
-    express.static(uploadFolder)
+    express.static(
+        uploadFolder
+    )
 );
 
 
 // =========================================================
 // HOME ROUTE
 // =========================================================
+// Keep this before the database middleware so the root URL
+// can respond even if MongoDB is temporarily unavailable.
+// =========================================================
 
-app.get("/", (req, res) => {
+app.get(
+    "/",
+    (req, res) => {
 
-    res.send(
-        "Campus Lost & Found Backend is Running!"
-    );
+        res.status(200).send(
+            "Campus Lost & Found Backend is Running!"
+        );
 
-});
+    }
+);
+
+
+// =========================================================
+// DATABASE MIDDLEWARE
+// =========================================================
+// Every API route below this point waits for MongoDB.
+// =========================================================
+
+app.use(
+    "/api",
+    async (req, res, next) => {
+
+        try {
+
+            await connectDB();
+
+            next();
+
+        } catch (error) {
+
+            console.error(
+                "DATABASE CONNECTION FAILED:",
+                error
+            );
+
+            return res.status(503).json({
+
+                message:
+                    "Database connection failed",
+
+                error:
+                    error.message
+
+            });
+
+        }
+
+    }
+);
 
 
 // =========================================================
@@ -156,58 +309,61 @@ app.get(
 
 
             const safeItems =
-                items.map((item) => {
+                items.map(
+                    (item) => {
 
-                    const safeItem = {
-                        ...item
-                    };
-
-
-                    // Never expose verification answers
-                    delete safeItem.verificationAnswer1;
-                    delete safeItem.verificationAnswer2;
+                        const safeItem = {
+                            ...item
+                        };
 
 
-                    // Backward compatibility for old
-                    // question-based Found reports
-                    const hasQuestions =
-                        typeof safeItem.verificationQuestion1 === "string" &&
-                        safeItem.verificationQuestion1.trim() !== "" &&
-                        typeof safeItem.verificationQuestion2 === "string" &&
-                        safeItem.verificationQuestion2.trim() !== "";
+                        // Never expose verification answers
+                        delete safeItem.verificationAnswer1;
+                        delete safeItem.verificationAnswer2;
 
 
-                    if (
-                        safeItem.type === "Found" &&
-                        hasQuestions
-                    ) {
+                        // Backward compatibility for old
+                        // question-based Found reports
+                        const hasQuestions =
+                            typeof safeItem.verificationQuestion1 === "string" &&
+                            safeItem.verificationQuestion1.trim() !== "" &&
+                            typeof safeItem.verificationQuestion2 === "string" &&
+                            safeItem.verificationQuestion2.trim() !== "";
 
-                        safeItem.verificationMethod =
-                            "questions";
+
+                        if (
+                            safeItem.type === "Found" &&
+                            hasQuestions
+                        ) {
+
+                            safeItem.verificationMethod =
+                                "questions";
+
+                        }
+
+
+                        if (
+                            !safeItem.verificationMethod
+                        ) {
+
+                            safeItem.verificationMethod =
+                                "none";
+
+                        }
+
+
+                        // Always return a real boolean
+                        safeItem.isUrgent =
+                            safeItem.isUrgent === true;
+
+
+                        return safeItem;
 
                     }
+                );
 
 
-                    if (
-                        !safeItem.verificationMethod
-                    ) {
-
-                        safeItem.verificationMethod =
-                            "none";
-
-                    }
-
-
-                    // Always return a real boolean
-                    safeItem.isUrgent =
-                        safeItem.isUrgent === true;
-
-                    return safeItem;
-
-                });
-
-
-            res.status(200).json(
+            return res.status(200).json(
                 safeItems
             );
 
@@ -218,7 +374,7 @@ app.get(
                 error
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 message:
                     "Failed to fetch items",
@@ -247,8 +403,7 @@ app.get(
             const item =
                 await Item.findById(
                     req.params.id
-                )
-                .lean();
+                ).lean();
 
 
             if (!item) {
@@ -304,7 +459,7 @@ app.get(
                 safeItem.isUrgent === true;
 
 
-            res.status(200).json(
+            return res.status(200).json(
                 safeItem
             );
 
@@ -315,7 +470,7 @@ app.get(
                 error
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 message:
                     "Failed to fetch item",
@@ -341,10 +496,6 @@ app.post(
     async (req, res) => {
 
         try {
-
-            // ==========================================
-            // DEBUG
-            // ==========================================
 
             console.log(
                 "------------------------------------------"
@@ -555,7 +706,7 @@ app.post(
             );
 
 
-            res.status(201).json({
+            return res.status(201).json({
 
                 message:
                     "Item reported successfully",
@@ -572,7 +723,7 @@ app.post(
                 error
             );
 
-            res.status(400).json({
+            return res.status(400).json({
 
                 message:
                     "Failed to add item",
@@ -734,7 +885,7 @@ app.post(
                 error
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 verified:
                     false,
@@ -818,6 +969,7 @@ app.put(
                     )
                     .trim()
                     .toLowerCase();
+
 
                 existingItem.isUrgent =
                     urgentValue === "true";
@@ -963,9 +1115,20 @@ app.put(
                         )
                     ) {
 
-                        fs.unlinkSync(
-                            oldFilePath
-                        );
+                        try {
+
+                            fs.unlinkSync(
+                                oldFilePath
+                            );
+
+                        } catch (deleteError) {
+
+                            console.warn(
+                                "Could not delete old image:",
+                                deleteError.message
+                            );
+
+                        }
 
                     }
 
@@ -982,7 +1145,7 @@ app.put(
                 await existingItem.save();
 
 
-            res.status(200).json({
+            return res.status(200).json({
 
                 message:
                     "Item updated successfully",
@@ -999,7 +1162,7 @@ app.put(
                 error
             );
 
-            res.status(400).json({
+            return res.status(400).json({
 
                 message:
                     "Failed to update item",
@@ -1057,7 +1220,7 @@ app.put(
             }
 
 
-            res.status(200).json({
+            return res.status(200).json({
 
                 message:
                     "Item marked as resolved successfully",
@@ -1074,7 +1237,7 @@ app.put(
                 error
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 message:
                     "Failed to update item status",
@@ -1145,16 +1308,27 @@ app.delete(
                     )
                 ) {
 
-                    fs.unlinkSync(
-                        filePath
-                    );
+                    try {
+
+                        fs.unlinkSync(
+                            filePath
+                        );
+
+                    } catch (deleteError) {
+
+                        console.warn(
+                            "Could not delete image:",
+                            deleteError.message
+                        );
+
+                    }
 
                 }
 
             }
 
 
-            res.status(200).json({
+            return res.status(200).json({
 
                 message:
                     "Item deleted successfully"
@@ -1168,7 +1342,7 @@ app.delete(
                 error
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 message:
                     "Failed to delete item",
@@ -1185,78 +1359,69 @@ app.delete(
 
 
 // =========================================================
-// START SERVER
+// LOCAL SERVER START
+// =========================================================
+// On Vercel we export the Express app.
+// Locally we start app.listen().
 // =========================================================
 
-mongoose
-    .connect(
-        process.env.MONGO_URI
-    )
+if (!isVercel) {
 
-    .then(() => {
+    connectDB()
+        .then(() => {
 
-        console.log(
-            "=========================================="
-        );
+            const PORT =
+                process.env.PORT ||
+                5000;
 
-        console.log(
-            "MongoDB Connected Successfully"
-        );
-
-        console.log(
-            "=========================================="
-        );
-
-
-        const PORT =
-            process.env.PORT ||
-            5000;
-
-
-        // On Vercel, do not manually create an Express
-        // listener with a local port. Vercel invokes the
-        // exported app as the serverless function.
-        if (process.env.VERCEL) {
-
-            console.log(
-                "Running on Vercel"
-            );
-
-        } else {
 
             app.listen(
                 PORT,
                 () => {
 
                     console.log(
+                        "=========================================="
+                    );
+
+                    console.log(
+                        "MongoDB Connected Successfully"
+                    );
+
+                    console.log(
                         `Server running on http://localhost:${PORT}`
+                    );
+
+                    console.log(
+                        "=========================================="
                     );
 
                 }
             );
 
-        }
+        })
+        .catch((error) => {
 
-    })
-    .catch((error) => {
+            console.error(
+                "=========================================="
+            );
 
-        console.error(
-            "=========================================="
-        );
+            console.error(
+                "MongoDB Connection Error:"
+            );
 
-        console.error(
-            "MongoDB Connection Error:"
-        );
+            console.error(
+                error
+            );
 
-        console.error(
-            error
-        );
+            console.error(
+                "=========================================="
+            );
 
-        console.error(
-            "=========================================="
-        );
+            process.exit(1);
 
-    });
+        });
+
+}
 
 
 // =========================================================
