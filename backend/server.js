@@ -4,6 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+
 require("dotenv").config({
     override: true
 });
@@ -24,14 +25,24 @@ app.use(express.json());
 // =========================================================
 // UPLOAD FOLDER
 // =========================================================
+// LOCAL:
+//   backend/uploads
+//
+// VERCEL:
+//   /tmp/campusfind-uploads
+//
+// Vercel's deployed filesystem is read-only, but /tmp is
+// writable for temporary files.
+// =========================================================
 
-const uploadFolder = path.join(
-    __dirname,
-    "uploads"
-);
+const uploadFolder = process.env.VERCEL
+    ? path.join("/tmp", "campusfind-uploads")
+    : path.join(__dirname, "uploads");
 
 if (!fs.existsSync(uploadFolder)) {
-    fs.mkdirSync(uploadFolder);
+    fs.mkdirSync(uploadFolder, {
+        recursive: true
+    });
 }
 
 
@@ -484,7 +495,6 @@ app.post(
                     status:
                         "Active",
 
-                    // IMPORTANT
                     isUrgent:
                         isUrgent,
 
@@ -1203,16 +1213,29 @@ mongoose
             5000;
 
 
-        app.listen(
-            PORT,
-            () => {
+        // On Vercel, do not manually create an Express
+        // listener with a local port. Vercel invokes the
+        // exported app as the serverless function.
+        if (process.env.VERCEL) {
 
-                console.log(
-                    `Server running on http://localhost:${PORT}`
-                );
+            console.log(
+                "Running on Vercel"
+            );
 
-            }
-        );
+        } else {
+
+            app.listen(
+                PORT,
+                () => {
+
+                    console.log(
+                        `Server running on http://localhost:${PORT}`
+                    );
+
+                }
+            );
+
+        }
 
     })
     .catch((error) => {
@@ -1234,3 +1257,10 @@ mongoose
         );
 
     });
+
+
+// =========================================================
+// VERCEL EXPORT
+// =========================================================
+
+module.exports = app;
