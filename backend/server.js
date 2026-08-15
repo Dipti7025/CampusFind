@@ -8,7 +8,7 @@ require("dotenv").config({
     override: true
 });
 
-const Item = require("./models/Item");
+const Item = require("./models/item");
 
 const app = express();
 
